@@ -1,81 +1,152 @@
-# Reverse Engineering CTF Challenge
+# Reverse Engineering CTF - Technical Report
 
-Welcome to the **Encrypted Message** reverse engineering challenge! This challenge tests your skills in **binary analysis**, **reverse engineering**, and understanding **dynamic runtime behavior**.
+**Author:** Sri Hari Aravindan 
 
----
+**Stack:** C, Linux ELF x86-64, Docker, Python 3, WSL
 
-## Challenge Overview
+**Repository:** github.com/Panca2022/reverse-engineering-ctf
 
-- The goal is to retrieve a **flag** from a binary.
-- The flag is in the format:
+## Abstract
 
-    flag{<20 random alphanumeric characters>}
+This is a reverse engineering CTF challenge built as a 64-bit Linux ELF
+binary. The player must identify the binary, extract its symbols and
+strings, disassemble main, and decode a hard-coded secret code. Submitting
+the correct code reveals a dynamically generated flag that changes on
+every run.
 
-- The binary prompts for a **secret code** before revealing the flag.
-- Only the correct **secret code** will unlock the dynamic flag.
-- The secret code is **hidden in the binary** and not provided in the repository.
+## Objectives
 
----
+- Identify an unknown binary with file.
+- Extract symbols and strings without disassembling first.
+- Read x86-64 assembly with objdump.
+- Demonstrate that XOR and compiler string inlining are not security.
 
-## Folder Structure
+## How It Works
 
-When you clone or download this repository, the relevant files are:
+The binary prompts for a license key. It compares the input against a
+secret code stored on the stack. If they match, it generates a random
+20-character string, wraps it in flag{...}, and prints it.
+
+Two functions do the work:
+- xor_encrypt() - XORs a buffer in place
+- generate_random() - fills a buffer with random characters
+
+Both names are visible because the binary is not stripped.
+
+## Solve Method
+
+Step 1. Identify the binary.
+    file challenge_binary
+    -> ELF 64-bit, x86-64, not stripped
+
+Step 2. Extract strings.
+    tr -c '[:print:]' '\n' < challenge_binary | grep -iE "flag|secret"
+    -> finds "Zflag{", "Enter License Key:", "Access Denied!"
+
+Step 3. Read the symbol table.
+    readelf -s challenge_binary | grep -E "xor_key|main|xor_encrypt"
+    -> exposes xor_encrypt, xor_key, generate_random, charset
+
+Step 4. Disassemble main.
+    objdump -d -M intel challenge_binary > disasm.txt
+    sed -n '/<main>:/,/^$/p' disasm.txt
+
+Step 5. Read the assembly. Two movabs instructions load the secret code:
+
+    127d: movabs rax, 0x50324b4d38465443
+    1287: mov    QWORD PTR [rbp-0x8f], rax
+    128e: movabs rax, 0x00585a5639514c50
+    1298: mov    QWORD PTR [rbp-0x88], rax
+
+Decode little-endian:
+    0x50324b4d38465443 -> "CTF8MK2P"
+    0x00585a5639514c50 -> "PLQ9VZX\0"
+
+The second store overlaps the first by one byte, so the P is written
+twice. Final string: CTF8MK2PLQ9VZX
+
+Step 6. Verify.
+    echo "CTF8MK2PLQ9VZX" | ./challenge_binary
+    -> Hey! You found the flag: flag{9yMpiaicoY14BgBMA6ax}
+
+## Why the XOR Obfuscation Fails
+
+main calls xor_encrypt twice on the same buffer. XOR is its own inverse:
+(X XOR K) XOR K = X. The double call is a no-op. The obfuscation does
+nothing.
+
+## Flag Generation
+
+After strcmp succeeds, main:
+1. Seeds srand with time(NULL)
+2. Generates 20 random characters
+3. Prepends flag{ and appends }
+4. Prints the result
+
+Every run produces a different flag.
+
+## Design Decisions
+
+Not stripped: focuses the challenge on logic, not symbol recovery.
+
+XOR instead of AES: AES would be unsolvable without the key. XOR gives
+a clean teaching moment.
+
+Docker: reproducible execution across distros.
+
+Dynamic flag: prevents sharing; each player must solve independently.
+
+Regex flag format: flag{[A-Za-z0-9]{20}} - allows automated verification.
+
+## Security Lessons
+
+1. Strip production binaries. Symbols leak function names and structure.
+2. XOR is not encryption. Double XOR is a no-op.
+3. Compiler optimisations leak data. Short strings become immediate
+   movabs instructions, readable from disassembly.
+4. Obfuscation raises cost; it does not provide confidentiality.
+
+## Tools Used
+
+file               Identify binary type
+tr + grep          Extract printable strings
+readelf -s         Dump symbol table
+objdump -d         Disassemble
+sed                Extract function blocks
+WSL Ubuntu         Run Linux binaries on Windows
+Docker             Reproducible execution
 
 
-deploy/encrypted_message/
+## Summary
 
-├── challenge_binary # The CTF binary you will analyze
+A reverse engineering CTF built as a 64-bit Linux ELF binary. The
+binary is not stripped, so the symbol table exposes the entire
+architecture. Disassembling main reveals the secret code
+CTF8MK2PLQ9VZX stored as immediate values on the stack. A double XOR
+is a no-op - a deliberate lesson that obfuscation is not encryption.
+The flag is regenerated per run using srand(time(NULL)).
 
-├── Dockerfile # Docker configuration to run the binary safely
+## Limitations
 
-└── README.md # This instructions file
+- Single-byte XOR is trivially broken.
+- Unstripped binary lowers difficulty.
+- Docker adds setup friction.
 
+## Future Work
 
-**Notes:**
+- Add ptrace anti-debugging.
+- Use a multi-byte runtime key.
+- Ship a stripped hard-mode variant.
+- Add a server-side flag check.
 
-- **challenge_binary** is already compiled and ready to run.
-- **Do NOT attempt to find the secret code in the repo** — it is intentionally hidden.
-- Source code is **not included** to keep the challenge fair.
+## Glossary
 
----
-
-## Prerequisites
-
-- You need to have **Docker** installed on your system.  
-- To check if Docker is installed:
-    ```docker --version```
-- Running the Challenge
-- Build the Docker Image
-- Navigate to the folder containing the Dockerfile:
-  ```cd deploy/encrypted_message```
-- Build the Docker image:
-  ```docker build -t encrypted_message_ctf .```
-- This creates a Docker image named encrypted_message_ctf.
-- Run the Challenge
-- Run the container interactively:
-  ```docker run --rm -it encrypted_message_ctf```
-- You will see:
-  ```Enter secret code:```
-- The program expects the correct secret code.
-- If the code is incorrect, the program exits with:
-  ```Access Denied! Wrong code.```
-- If the code is correct, the program outputs a flag
-
-Note: The flag changes every run to prevent simple reuse.
-
-## Challenge Hints
-- The secret code is inside the binary, not in the repo.
-- Use reverse engineering tools like:
-  - radare2
-  - Ghidra
-  - ghidra
-- The binary is obfuscated in memory:
-  - The secret code and flag are XOR-encrypted at runtime.
-  - Strings in the binary do not reveal the code or flag.
-  - Consider debugging the binary to trace where it decrypts and checks the secret code.
-
-### Rules
-Do not modify the binary — reverse engineer it as-is.
-You may use any tools or debuggers to figure out the secret code.
-Do not share the secret code with others outside the CTF.
-Example Walkthrough (for testers only)
+ELF             Linux binary format
+Stripped        Symbol table removed
+.rodata         Read-only data section
+movabs          64-bit immediate move instruction
+Little-endian   Least-significant byte first
+XOR             Bitwise exclusive-or; its own inverse
+CTF             Capture The Flag
+strcmp          C function comparing strings
+ptrace          Linux syscall used for anti-debugging
